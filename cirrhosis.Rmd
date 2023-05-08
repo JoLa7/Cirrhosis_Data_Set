@@ -1,0 +1,431 @@
+# Preliminary work on the Chirossis Data set:
+
+```{r}
+cir = read.csv("C:\\Users\\lazar\\Downloads\\cirrhosis.csv")
+
+dim(cir)
+```
+
+
+Starting with patients 313 - 418, there is a lack of information on categorical features such as ascites, hepmeg, spiders, and edema. As a result, I will be removing these patients. The reason I am not keeping them is because it will be hard to predict their categorical features, and other mreasurments such as Chol, cu, alkphos, sgot, trig, and plat. There are simply way too many missing patient variables for these
+
+```{r}
+cir = cir[-c(313:418),]
+```
+
+Now we must convert all of these categorical variables. First, I would like to see what unique categories there are for the categorical variables
+
+```{r}
+unique(cir$rx)
+unique(cir$sex)
+unique(cir$ascites)
+unique(cir$hepmeg)
+unique(cir$spiders)
+unique(cir$edema)
+
+```
+
+
+Lets one hot encode the variables
+
+```{r}
+library(dplyr)
+
+vars_to_encode <- c("rx", "sex", "ascites", "hepmeg", "spiders", "edema")
+
+# Create a new data frame with the one hot encoded variables
+one_hot_encoded <- cir %>%
+  select(all_of(vars_to_encode)) %>%
+  mutate_all(as.factor) %>%
+  model.matrix(~.-1, data = .)
+
+# Give meaningful column names to the one hot encoded variables
+colnames(one_hot_encoded) <- gsub(".*\\.", "", colnames(one_hot_encoded))
+
+# Combine the original data frame with the one hot encoded variables
+cir_encoded <- cbind(cir %>% select(-all_of(vars_to_encode)), one_hot_encoded)
+
+```
+
+We will remove rxplacebo to remove colliniarities
+```{r}
+cir_encoded <- cir_encoded[, -which(colnames(cir_encoded) == "rxplacebo")]
+```
+
+
+
+Transforming values from ? to NA
+```{r}
+cir_encoded$chol <- as.integer(ifelse(cir_encoded$chol == "?", NA, cir_encoded$chol))
+cir_encoded$cu <- as.integer(ifelse(cir_encoded$cu == "?", NA, cir_encoded$cu))
+cir_encoded$alkphos <- as.integer(ifelse(cir_encoded$alkphos == "?", NA, cir_encoded$alkphos))
+cir_encoded$sgot <- as.integer(ifelse(cir_encoded$sgot == "?", NA, cir_encoded$sgot))
+cir_encoded$trig <- as.integer(ifelse(cir_encoded$trig == "?", NA, cir_encoded$trig))
+cir_encoded$plat <- as.integer(ifelse(cir_encoded$plat == "?", NA, cir_encoded$plat))
+cir_encoded$ptt <- as.integer(ifelse(cir_encoded$ptt == "?", NA, cir_encoded$ptt))
+cir_encoded$stage <- as.integer(ifelse(cir_encoded$stage == "?", NA, cir_encoded$stage))
+
+```
+
+```{r}
+summary(cir_encoded)
+```
+
+
+Usually in SAS, variables listed as ...rxD-peni... mess up the reading of the data, thus I will change it to an underscore
+
+```{r}
+names(cir_encoded)[names(cir_encoded) == "rxD-penicillamine"] <- "rxD_penicillamine"
+```
+
+event:
+censored = 0
+liver transplant = 1
+dead = 2
+
+
+We will remove our liver transplant patients.
+
+In addition, I will do the following
+censored = 0
+dead = 1
+
+```{r}
+# Drop value 1
+cir_encoded <- cir_encoded[cir_encoded$event != 1,]
+
+# Replace values 0 and 2
+cir_encoded$event <- ifelse(cir_encoded$event == 0, 1, 0)
+
+```
+
+
+
+Hailey wanted this variable to be added back. 
+
+Basically, if edemaedema_present_without_diuretics_or_edema_resolved_by_diuretics & edemano_edema_and_no_diuretic_therapy_for_edema 0, then the new variable edema_despite_diuretic_therapy will be equal to 1. 
+
+```{r}
+library(dplyr)
+
+cir_encoded <- cir_encoded %>%
+  mutate(edema_despite_diuretic_therapy = if_else(edemaedema_present_without_diuretics_or_edema_resolved_by_diuretics == 0 & edemano_edema_and_no_diuretic_therapy_for_edema == 0, 1, 0))
+
+```
+
+Now, I will factor the variable. 
+
+```{r}
+cir_encoded$rxD_penicillamine = as.factor(cir_encoded$rxD_penicillamine)
+cir_encoded$sexmale = as.factor(cir_encoded$sexmale)
+cir_encoded$ascitesyes = as.factor(cir_encoded$ascitesyes)
+cir_encoded$hepmegyes = as.factor(cir_encoded$hepmegyes)
+cir_encoded$spidersyes = as.factor(cir_encoded$spidersyes)
+cir_encoded$edemaedema_present_without_diuretics_or_edema_resolved_by_diuretics = as.factor(cir_encoded$edemaedema_present_without_diuretics_or_edema_resolved_by_diuretics)
+cir_encoded$edemano_edema_and_no_diuretic_therapy_for_edema = as.factor(cir_encoded$edemano_edema_and_no_diuretic_therapy_for_edema)
+```
+
+```{r}
+sum(is.na(cir_encoded))
+```
+
+We have a total of 62 mising values. Instead of dropping them, we will impute them by using a random forest algorithm. 
+
+
+I want to see what the distribution looks like before we impute the data
+
+```{r}
+library(ggplot2)
+
+# Set the figure size and resolution
+options(repr.plot.width=10, repr.plot.height=8, repr.plot.res=300)
+
+# Define the list of excluded variables
+excluded_vars <- c("rxD_penicillamine", "sexmale", "ascitesyes", "hepmegyes", "spidersyes", 
+                   "edemaedema_present_without_diuretics_or_edema_resolved_by_diuretics", 
+                   "edemano_edema_and_no_diuretic_therapy_for_edema")
+
+# Create a list of data frames, each containing one variable and its name, excluding the excluded variables
+data_list <- lapply(names(cir_encoded[!(names(cir_encoded) %in% excluded_vars)]), 
+                    function(x) data.frame(variable = x, value = cir_encoded[,x]))
+
+# Create a list of ggplot objects, one for each variable
+plot_list <- lapply(data_list, function(x) ggplot(x, aes(x = value, fill = variable)) + 
+                    geom_density(alpha = 0.5) + 
+                    ggtitle(x$variable) +
+                    theme(plot.title = element_text(hjust = 0.5)))
+
+# Combine the ggplot objects into a single plot using the grid.arrange function from the gridExtra package
+library(gridExtra)
+grid.arrange(grobs = plot_list, ncol = 3)
+
+```
+
+We will now use the missForest algorithm to imputate the data
+
+```{r}
+library(missForest)
+imputed_data = missForest(cir_encoded, maxiter = 10)
+
+
+imp_randomForrest = imputed_data$ximp
+```
+
+```{r}
+summary(imp_randomForrest)
+```
+
+Box plot version of our pdf
+
+```{r}
+library(ggplot2)
+
+# Set the figure size and resolution
+options(repr.plot.width=10, repr.plot.height=8, repr.plot.res=300)
+
+# Define the list of excluded variables
+excluded_vars <- c("rxD_penicillamine", "sexmale", "ascitesyes", "hepmegyes", "spidersyes", 
+                   "edemaedema_present_without_diuretics_or_edema_resolved_by_diuretics", 
+                   "edemano_edema_and_no_diuretic_therapy_for_edema")
+
+# Create a list of data frames, each containing one variable and its name, excluding the excluded variables
+data_list <- lapply(names(imp_randomForrest[!(names(imp_randomForrest) %in% excluded_vars)]), 
+                    function(x) data.frame(variable = x, value = imp_randomForrest[,x]))
+
+# Create a list of ggplot objects, one for each variable
+plot_list <- lapply(data_list, function(x) ggplot(x, aes(x = variable, y = value)) + 
+                    geom_boxplot(fill = "lightblue") + 
+                    ggtitle(x$variable) +
+                    theme(plot.title = element_text(hjust = 0.5)))
+
+# Combine the ggplot objects into a single plot using the grid.arrange function from the gridExtra package
+library(gridExtra)
+grid.arrange(grobs = plot_list, ncol = 3)
+
+```
+
+
+pdf of the imputed data 
+```{r}
+library(ggplot2)
+
+# Set the figure size and resolution
+options(repr.plot.width=10, repr.plot.height=8, repr.plot.res=300)
+
+# Define the list of excluded variables
+excluded_vars <- c("rxD_penicillamine", "sexmale", "ascitesyes", "hepmegyes", "spidersyes", 
+                   "edemaedema_present_without_diuretics_or_edema_resolved_by_diuretics", 
+                   "edemano_edema_and_no_diuretic_therapy_for_edema")
+
+# Create a list of data frames, each containing one variable and its name, excluding the excluded variables
+data_list <- lapply(names(imp_randomForrest[!(names(imp_randomForrest) %in% excluded_vars)]), 
+                    function(x) data.frame(variable = x, value = imp_randomForrest[,x]))
+
+# Create a list of ggplot objects, one for each variable
+plot_list <- lapply(data_list, function(x) ggplot(x, aes(x = value, fill = variable)) + 
+                    geom_density(alpha = 0.5) + 
+                    ggtitle(x$variable) +
+                    theme(plot.title = element_text(hjust = 0.5)))
+
+# Combine the ggplot objects into a single plot using the grid.arrange function from the gridExtra package
+library(gridExtra)
+grid.arrange(grobs = plot_list, ncol = 3)
+
+```
+
+
+now, I want to superimpose the graphs together to show before and after 
+```{r}
+library(ggplot2)
+library(gridExtra)
+
+# Set the figure size and resolution
+options(repr.plot.width=10, repr.plot.height=8, repr.plot.res=300)
+
+# Define the list of excluded variables
+excluded_vars <- c("rxD_penicillamine", "sexmale", "ascitesyes", "hepmegyes", "spidersyes", 
+                   "edemaedema_present_without_diuretics_or_edema_resolved_by_diuretics", 
+                   "edemano_edema_and_no_diuretic_therapy_for_edema")
+
+# Create a list of data frames, each containing one variable and its name, excluding the excluded variables
+data_list_1 <- lapply(names(cir_encoded[!(names(cir_encoded) %in% excluded_vars)]), 
+                      function(x) data.frame(variable = x, value = cir_encoded[,x], dataset = "original data set"))
+
+data_list_2 <- lapply(names(imp_randomForrest[!(names(imp_randomForrest) %in% excluded_vars)]), 
+                      function(x) data.frame(variable = x, value = imp_randomForrest[,x], dataset = "imputed random forest"))
+
+# Combine the data frames
+combined_data_list <- mapply(rbind, data_list_1, data_list_2, SIMPLIFY = FALSE)
+
+# Create a list of ggplot objects, one for each variable
+plot_list <- lapply(combined_data_list, function(x) ggplot(x, aes(x = value, fill = dataset, color = dataset)) + 
+                    geom_density(alpha = 0.5) + 
+                    ggtitle(x$variable[1]) +
+                    theme(plot.title = element_text(hjust = 0.5)))
+
+# Combine the ggplot objects into a single plot using the grid.arrange function from the gridExtra package
+grid.arrange(grobs = plot_list, ncol = 3)
+
+```
+
+looking at placebo vs rxD
+```{r}
+library(GGally)
+imp_randomForrest %>% 
+  select(-id) %>% 
+  select(age, bili, chol, alb, cu, alkphos, sgot, trig, plat, ptt, stage, rxD_penicillamine, sexmale) %>% 
+  ggpairs(aes(fill = rxD_penicillamine))
+```
+
+stage graph
+
+```{r}
+df <- imp_randomForrest %>% 
+  group_by(sexmale, stage) %>% 
+  summarise(counts = n())
+
+ggplot(df, aes(x = stage, y = counts)) + 
+  geom_bar(aes(fill = sexmale), stat = "identity", position = "dodge") + 
+  geom_text(aes(label = counts, group = sexmale), position = position_dodge(0.9), vjust = -.3, size = 3.5) + 
+  scale_fill_manual(values = c("#EEAB5F", "#EE5F93"))
+```
+
+Survival Analysis 
+
+```{r}
+library(survival)
+```
+
+
+```{r}
+# Fit the Cox proportional hazards model with stratification by stage
+fit <- coxph(Surv(age, event) ~ alb + alkphos + ascitesyes + bili + chol + cu + hepmegyes + plat + ptt + rxD_penicillamine + 
+                sexmale + sgot + spidersyes + strata(stage) + trig + edemaedema_present_without_diuretics_or_edema_resolved_by_diuretics + edemano_edema_and_no_diuretic_therapy_for_edema + edema_despite_diuretic_therapy, data = imp_randomForrest)
+
+# Print the model summary
+summary(fit)
+```
+
+```{r}
+# Fit the Cox proportional hazards model with stratification by stage
+fit <- coxph(Surv(age, event) ~  cu + hepmegyes + ptt + edemano_edema_and_no_diuretic_therapy_for_edema, data = imp_randomForrest)
+
+# Print the model summary
+summary(fit)
+```
+
+
+```{r}
+library(survminer)
+
+# Predict the survival probabilities
+predicted_survival <- survfit(fit)
+
+# Plot the survival curves
+g <- ggsurvplot(
+  predicted_survival,
+  data = imp_randomForrest,
+  pval = TRUE,           # Add p-value
+  risk.table = TRUE,     # Add risk table
+  conf.int = TRUE,       # Add confidence intervals
+  legend.labs = c("Group 1"), # Change legend labels as per your groupings
+  palette = c("blue"), # Change colors as desired
+  xlab = "Age", # Customize x-axis label
+  ylab = "Survival Probability", # Customize y-axis label
+  title = "Kaplan-Meier Survival Curve" # Customize the title
+)
+
+# Print the plot
+g
+
+
+```
+
+```{r}
+# Create separate survival objects for each stage
+stage_survival <- survfit(Surv(age, event) ~ stage, data = imp_randomForrest)
+
+# Plot the survival curves
+g <- ggsurvplot(
+  stage_survival,
+  data = imp_randomForrest,
+  pval = TRUE,           # Add p-value
+  risk.table = TRUE,     # Add risk table
+  conf.int = TRUE,       # Add confidence intervals
+  legend.labs = c("Stage 1", "Stage 2", "Stage 3", "Stage 4"), # Change legend labels as per your groupings
+  palette = c("blue", "red", "green", "purple"), # Change colors as desired
+  xlab = "Age", # Customize x-axis label
+  ylab = "Survival Probability", # Customize y-axis label
+  title = "Kaplan-Meier Survival Curve by Stage" # Customize the title
+)
+
+# Print the plot
+g
+
+
+```
+
+
+```{r}
+# Perform the log-rank test
+log_rank_test <- survdiff(Surv(age, event) ~ stage, data = imp_randomForrest)
+
+# Print the test results
+log_rank_test
+
+```
+
+There are four stages (1, 2, 3, and 4), and their corresponding sample sizes are 16, 64, 112, and 101, respectively.
+For each stage, the observed and expected events are listed. For example, in stage 1, there were 15 observed events, whereas 6.3 events were expected under the null hypothesis.
+The test statistic contributions ((O-E)^2/E) and the variance contributions ((O-E)^2/V) are also listed for each stage. These values are used to compute the overall chi-squared statistic and its associated p-value.
+The overall chi-squared statistic is 40.7 with 3 degrees of freedom. The associated p-value is 8e-09 (which is extremely small).
+Since the p-value (8e-09) is much smaller than a typical significance level (e.g., 0.05), you can reject the null hypothesis. This means that there is a statistically significant difference in the survival curves between the different stages. In other words, the survival probabilities are significantly different among the four stages.
+
+
+```{r}
+# Perform pairwise log-rank tests
+pairwise_tests <- pairwise_survdiff(Surv(age, event) ~ stage, data = imp_randomForrest, p.adjust.method = "bonferroni")
+
+# Print the results
+pairwise_tests
+
+```
+
+
+Stage 1 vs. Stage 2: The adjusted p-value is 0.38, which is greater than 0.05 (a typical significance level). Therefore, there is no statistically significant difference in the survival curves between Stage 1 and Stage 2.
+
+Stage 1 vs. Stage 3: The adjusted p-value is 0.17, which is also greater than 0.05. This indicates that there is no statistically significant difference in the survival curves between Stage 1 and Stage 3.
+
+Stage 1 vs. Stage 4: The adjusted p-value is 7.3e-08, which is much smaller than 0.05. This means that there is a statistically significant difference in the survival curves between Stage 1 and Stage 4.
+
+Stage 2 vs. Stage 3: The adjusted p-value is 1.00, indicating no statistically significant difference in the survival curves between Stage 2 and Stage 3.
+
+Stage 2 vs. Stage 4: The adjusted p-value is 2.8e-06, which is smaller than 0.05. This implies that there is a statistically significant difference in the survival curves between Stage 2 and Stage 4.
+
+Stage 3 vs. Stage 4: The adjusted p-value is 1.1e-05, which is also smaller than 0.05. This means that there is a statistically significant difference in the survival curves between Stage 3 and Stage 4.
+
+```{r}
+# library(ggridges)
+# library(ggplot2)
+# library(viridis)
+# library(hrbrthemes)
+# library(reshape2)
+# 
+# # Select variables to plot
+# vars_to_plot <- colnames(imp_randomForrest)[!(colnames(imp_randomForrest) %in% c("rxD-penicillamine", "sexmale", "ascitesyes", "hepmegyes", "spidersyes", "edemaedema_present_without_diuretics_or_edema_resolved_by_diuretics", "edemano_edema_and_no_diuretic_therapy_for_edema"))]
+# 
+# # Create plot
+# ggplot(melt(imp_randomForrest[,vars_to_plot]), aes(x=value, y=variable, fill=value)) + 
+#   geom_density_ridges_gradient(scale = 3, rel_min_height = 0.01) +
+#   scale_fill_viridis(name = "Density", option = "C") +
+#   labs(title = "Density distributions of variables in imp_randomForest") +
+#   theme_minimal()
+
+```
+
+
+```{r}
+#write.csv(imp_randomForrest, file ="C:\\Users\\lazar\\Documents\\Spring2023\\Survival_Analysis\\cirrhosisCLEANED.csv" )
+
+```
+
