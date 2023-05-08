@@ -1,6 +1,8 @@
 # Cirrhosis_Data_Set
 Liver disease affects over 100 million people in the US, with cirrhosis being a major cause of liver transplants. Our project examines Primary Biliary Cirrhosis, an autoimmune disease more prevalent in women. Studying PBC helps identify crucial factors in disease progression and treatment, aiding in better therapeutic interventions.
 
+The data set was obtained from Open ML:
+https://www.openml.org/search?type=data&sort=runs&id=524&status=active
 
 # Workflow
 All data was cleaned in the latest version of R.
